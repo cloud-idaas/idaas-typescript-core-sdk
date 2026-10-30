@@ -1,0 +1,77 @@
+{
+  "name": "@cloud-idaas/core-sdk",
+  "version": "0.1.0-beta.1",
+  "description": "IDaaS core-sdk for TypeScript and JavaScript (Node.js)",
+  "license": "Apache-2.0",
+  "type": "commonjs",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.mts",
+        "default": "./dist/index.mjs"
+      },
+      "require": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "README_zh.md",
+    "CHANGELOG.md",
+    "examples",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-version.cjs && tsc -p tsconfig.json && node scripts/build-esm.cjs",
+    "typecheck": "node scripts/build-version.cjs && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "test": "npm run build && nyc mocha --require ./test/register.cjs \"test/**/*.test.{ts,cjs}\"",
+    "prepack": "npm run build",
+    "lint": "eslint src test",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.{ts,cjs}\" \"scripts/**/*.{cjs,cts,mts}\" \".github/workflows/*.yml\" \"examples/**/*.{ts,cjs,mjs}\" \"*.{json,cjs,md}\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.{ts,cjs}\" \"scripts/**/*.{cjs,cts,mts}\" \".github/workflows/*.yml\" \"examples/**/*.{ts,cjs,mjs}\" \"*.{json,cjs,md}\"",
+    "verify": "npm run check:language && npm run typecheck && npm run lint && npm run format:check && npm test",
+    "bootstrap:deps": "node scripts/stage-upstreams.cjs",
+    "lock:deps": "node scripts/lock-upstreams.cjs",
+    "release:check": "node scripts/release-tools.cjs check",
+    "validate:workspace": "node scripts/validate-workspace.cjs",
+    "prepublishOnly": "npm run release:check",
+    "validate:repository": "node scripts/validate-workspace.cjs --target idaas-typescript-core-sdk",
+    "check:language": "node scripts/check-language.cjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "20.17.0",
+    "@types/mocha": "10.0.10",
+    "mocha": "11.7.5",
+    "ts-node": "10.9.2",
+    "nyc": "17.1.0",
+    "eslint": "10.13.0",
+    "@typescript-eslint/parser": "8.71.2",
+    "@typescript-eslint/eslint-plugin": "8.71.2",
+    "prettier": "3.6.2"
+  },
+  "dependencies": {
+    "jose": "6.2.12",
+    "httpx": "2.3.3"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cloud-idaas/idaas-typescript-core-sdk.git"
+  },
+  "homepage": "https://github.com/cloud-idaas/idaas-typescript-core-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/cloud-idaas/idaas-typescript-core-sdk/issues"
+  }
+}

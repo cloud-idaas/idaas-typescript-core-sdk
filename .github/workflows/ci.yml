@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, master, 'feature/**']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repository:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout idaas-typescript-core-sdk
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          path: idaas-sdk-workspace/idaas-typescript-core-sdk
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 24.3.0
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Pin npm
+        run: npm install --global npm@11.21.1
+      - name: Validate current repository
+        env:
+          WORKSPACE: ${{ github.workspace }}/idaas-sdk-workspace
+          VALIDATION_OUT: ${{ runner.temp }}/idaas-validation
+        run: >-
+          node "$WORKSPACE/idaas-typescript-core-sdk/scripts/validate-workspace.cjs"
+          --workspace "$WORKSPACE" --out "$VALIDATION_OUT"
+          --target idaas-typescript-core-sdk
+      - name: Validate packed Core compatibility
+        env:
+          VALIDATION_OUT: ${{ runner.temp }}/idaas-validation
+        run: >-
+          node "idaas-sdk-workspace/idaas-typescript-core-sdk/scripts/validate-core-consumer.cjs"
+          --result "$VALIDATION_OUT/latest.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: idaas-typescript-core-sdk-repository
+          path: |
+            ${{ runner.temp }}/idaas-validation/latest.json
+            ${{ runner.temp }}/idaas-validation/run-*/manifest.json
+            ${{ runner.temp }}/idaas-validation/run-*/logs/
+            ${{ runner.temp }}/idaas-validation/run-*/public/*.tgz
+            ${{ runner.temp }}/idaas-validation/run-*/internal/*.tgz
+          if-no-files-found: warn
+          retention-days: 7

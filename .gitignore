@@ -1,0 +1,83 @@
+# 依赖及包管理器缓存（锁文件仍纳入版本管理）
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.yarn/unplugged/
+.pnp.*
+
+# 构建、覆盖率及受控候选包
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+*.tgz
+.sdk-artifacts/
+
+# 编译、检查及测试工具缓存
+.cache/
+.parcel-cache/
+.rpt2_cache/
+.eslintcache
+.stylelintcache
+.prettiercache
+
+# 日志、运行报告及临时文件
+logs/
+*.log
+report.*.json
+*.cpuprofile
+*.heapprofile
+*.heapsnapshot
+*.pid
+*.pid.lock
+nohup.out
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.localbak
+
+# 本地环境配置；允许提交不含真实凭据的模板
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.sample
+!.env.template
+
+# IDE、编辑器及 AI 工具的本地工作目录
+.idea/
+.vscode/
+.fleet/
+.history/
+.cursor/
+.claude/
+.codex/
+.codegraph/
+.aider*
+*.iml
+*.ipr
+*.iws
+*.swp
+*.swo
+*~
+
+# macOS / Windows 系统文件
+.DS_Store
+._*
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 本地验证与发布制品
+.validation-artifacts/
+.npmrc.local
+
+# Build-time SDK metadata
+/src/sdk-version.ts
