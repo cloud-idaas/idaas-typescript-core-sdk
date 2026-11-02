@@ -1,6 +1,6 @@
 {
   "name": "@cloud-idaas/core-sdk",
-  "version": "0.1.0-beta.1",
+  "version": "0.1.0-beta.2",
   "description": "IDaaS core-sdk for TypeScript and JavaScript (Node.js)",
   "license": "Apache-2.0",
   "type": "commonjs",
