@@ -1,6 +1,6 @@
 {
   "name": "@cloud-idaas/core-sdk",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "IDaaS core-sdk for TypeScript and JavaScript (Node.js)",
   "license": "Apache-2.0",
   "type": "commonjs",
@@ -59,8 +59,7 @@
     "prettier": "3.6.2"
   },
   "dependencies": {
-    "jose": "6.2.12",
-    "httpx": "2.3.3"
+    "jose": "6.2.12"
   },
   "publishConfig": {
     "access": "public",

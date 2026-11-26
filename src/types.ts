@@ -38,9 +38,29 @@ export interface IdentityAuthenticationConfiguration {
   x509CertChains?: string;
   pluginName?: string;
 }
+/** Optional diagnostic labels; never used for authentication or authorization. */
+export interface UserAgentMetadata {
+  applicationId?: string;
+  applicationVersion?: string;
+  deploymentEnvironment?: string;
+  /** Omitted/true reads the local hostname; false disables it; a string supplies an alias. */
+  hostname?: boolean | string;
+}
 export interface HttpConfiguration {
   /** Optional User-Agent replacement (1-512 printable ASCII characters); default includes Core and runtime versions. */
   userAgent?: string;
+  /** Legacy diagnostic labels; corresponding explicit configuration fields take precedence. */
+  userAgentMetadata?: UserAgentMetadata;
+  /** Includes the local hostname or configured alias by default. False suppresses either source. */
+  userAgentHostnameEnabled?: boolean;
+  /** Optional alias for the hostname diagnostic label. */
+  userAgentHostname?: string;
+  /** Optional application name appended to the default User-Agent. */
+  userAgentApplicationName?: string;
+  /** Optional application version appended to the default User-Agent. */
+  userAgentApplicationVersion?: string;
+  /** Optional diagnostic label with no effect on the selected authentication source. */
+  userAgentDeploymentEnvironment?: string;
   /** Milliseconds, between 2000 and 60000. */
   connectTimeout?: number;
   readTimeout?: number;
@@ -65,6 +85,10 @@ export interface IDaaSCredential {
   tokenType: string;
   expiresIn: number;
   expiresAt: number;
+  /** Present on Token Exchange results after response validation. */
+  issuedTokenType?: string;
+  /** Scope returned by Token Exchange; absent on ordinary client credentials unless otherwise documented. */
+  scope?: string;
 }
 export interface IDaaSCredentialProvider {
   getCredential(): Promise<IDaaSCredential>;
@@ -88,7 +112,12 @@ export interface PluginCredentialProvider {
   getName(): string;
   /** Optional legacy names, returned synchronously without identity reads or I/O. Canonical names and aliases must be unique. */
   getAliases?(): readonly string[];
-  getToken(config: Readonly<IDaaSClientConfig>, scope: string): Promise<IDaaSCredential>;
+  /** Returns an untrusted token result; Core derives a missing expiresAt from the call start time. */
+  getToken(config: Readonly<IDaaSClientConfig>, scope: string): Promise<PluginTokenResult>;
+}
+/** Plugin input to Core validation; public credentials always include a validated expiresAt. */
+export interface PluginTokenResult extends Omit<IDaaSCredential, 'expiresAt'> {
+  expiresAt?: number;
 }
 export interface Logger {
   info(event: string, fields: Readonly<Record<string, unknown>>): void;

@@ -171,21 +171,18 @@ export function normalizeCertificate(certificate: string): string {
     );
   }
 }
-/** Validates complete PEM certificate counts and intermediate CA types, without validating trust paths. */
+/** Validates PEM syntax and a single leaf; chain membership, size, and trust belong to the server. */
 export function validatePemCertificates(pem: string, chain: boolean): void {
   const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
   const remainder = pem
     .replace(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g, '')
     .trim();
   try {
-    if (remainder || blocks.length < 1 || blocks.length > (chain ? 5 : 1)) throw new Error();
-    for (const block of blocks) {
-      const cert = new X509Certificate(block);
-      if (chain && !cert.ca) throw new Error();
-    }
+    if (remainder || blocks.length < 1 || (!chain && blocks.length !== 1)) throw new Error();
+    for (const block of blocks) new X509Certificate(block);
   } catch {
     throw new CredentialException(
-      'Invalid PCA PEM certificate or intermediate CA chain',
+      'Invalid PCA PEM certificate or certificate chain',
       'InvalidCertificateChain',
     );
   }

@@ -61,8 +61,8 @@ export class IDaaSCredentialProviderFactory {
       .then(async () => {
         const config =
           typeof configOrPath === 'object'
-            ? validateConfig(configOrPath)
-            : await loadConfig(configOrPath);
+            ? validateConfig(configOrPath, this.options)
+            : await loadConfig(configOrPath, this.options);
         const provider = this.create(config);
         try {
           await provider.getCredential();

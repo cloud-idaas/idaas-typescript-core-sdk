@@ -45,28 +45,60 @@ Provide `idaasInstanceId`, `clientId`, `issuer`, `tokenEndpoint`, `scope`, and `
 
 Configuration can be supplied as an object or JSON file. File selection is: an explicit `init(path)` argument, then `CLOUD_IDAAS_CONFIG_PATH`, then `~/.cloud_idaas/client-config.json`. Keep actual secrets in environment variables referenced by the configuration.
 
-| Authentication                                                   | Required credential source                                                                                      |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `CLIENT_SECRET_BASIC`, `CLIENT_SECRET_POST`, `CLIENT_SECRET_JWT` | `clientSecretEnvVarName`                                                                                        |
-| `PRIVATE_KEY_JWT`                                                | RSA PEM key referenced by `privateKeyEnvVarName`                                                                |
-| `OIDC`                                                           | Federated credential name, deployment environment, and token-file configuration or an injected OIDC provider    |
-| `PKCS7`                                                          | Federated credential name, deployment environment, and a supported cloud identity or injected document provider |
-| `PCA`                                                            | Federated credential name, matching PEM certificate/private key, and 1–5 intermediate CA certificates           |
-| `PLUGIN`                                                         | Registered plugin, `pluginName`, and `openApiEndpoint`                                                          |
+| Authentication                                                   | Required credential source                                                                                                           |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `CLIENT_SECRET_BASIC`, `CLIENT_SECRET_POST`, `CLIENT_SECRET_JWT` | `clientSecretEnvVarName` or injected `clientSecretSupplier`; JWT also accepts `clientAssertionProvider`                              |
+| `PRIVATE_KEY_JWT`                                                | RSA PEM key referenced by `privateKeyEnvVarName` or injected `clientAssertionProvider`                                               |
+| `OIDC`                                                           | Federated credential name and injected `oidcTokenProvider`, explicit token-file configuration, or a supported deployment environment |
+| `PKCS7`                                                          | Federated credential name and injected `attestedDocumentProvider` or supported cloud deployment environment                          |
+| `PCA`                                                            | Federated credential name, one PEM leaf and a nonempty PEM chain, plus an external assertion provider or matching local private key  |
+| `PLUGIN`                                                         | Registered plugin and `pluginName`; OpenAPI configuration is required only by plugins that use it                                    |
 
 See the exported `IDaaSClientConfig` type for authentication-specific field definitions. Await initialization before obtaining providers. Call `getIDaaSCredentialProvider(scope)` for a different authorized scope. `getAccessToken()` returns a bearer token; pass it only to the intended service.
 
+Pass custom sources to `new IDaaSCredentialProviderFactory(options)` or `new IDaaSMachineCredentialProvider(config, options)`. Object and file initialization use the same validation. Injected sources take precedence and do not require unused environment variable names or deployment settings. `clientDeployEnvironment` is validated only when selecting a default OIDC file or built-in PKCS7 source; injected sources and explicit OIDC file configuration ignore it, including unsupported values. For built-in OIDC files, selection is `oidcTokenFilePath`, then the variable named by `oidcTokenFilePathEnvVarName`, then the default ServiceAccount file in a supported Kubernetes environment. A selected empty or unavailable source fails without fallback.
+
+PCA preserves the complete PEM chain, including leaf or root certificates supplied by the caller. The server checks intermediate certificate limits, trust, and authorization. External assertions do not require a local private key. Plugins return a nonempty `accessToken`, finite positive `expiresIn`, and a Bearer `tokenType`; optional `expiresAt` uses Unix seconds. Core takes the earlier of `expiresAt` and the plugin call start plus `expiresIn`, and rejects expired results.
+
 ## Token Exchange
 
-Use `provider.tokenExchange({ subjectToken, scope })` with a user access token trusted by the IDaaS authorization server. The target scope must identify one audience; an explicit `audience` must match it. Supported token types are IDaaS access tokens. Token Exchange is unavailable for plugin authentication; actor-token and resource extensions are outside this SDK's supported integration scope.
+Use `provider.tokenExchange({ subjectToken, scope })` with a subject trusted by the IDaaS authorization server. Omitted `subjectTokenType` and `requestedTokenType` default to `urn:ietf:params:oauth:token-type:access_token`; omitted scope uses the provider scope. Explicit subject/actor types, audience, and requested type are preserved. The server decides which combinations and permissions it accepts. AGI delegation uses `actorToken` and `actorTokenType: 'urn:cloud:idaas:params:oauth:token-type:agi:actor-token'`.
+
+Optional `authentication` replaces configured authentication for this exchange. It accepts `clientId`, `clientSecret`, `clientAssertion`, `clientAssertionType`, `applicationFederatedCredentialName`, `clientX509Certificate`, and `x509CertChains`. Only `clientId` defaults to the configured ID; all other required materials must be supplied explicitly. Core does not call configured credential sources or add a Basic header for these requests. Plugin providers require explicit authentication for exchange.
+
+Use `additionalParameters` for request form fields without a named option. Values must be nonempty strings and are form-encoded without changing their contents; server support is still required. Repeating a named exchange/authentication field or `grant_type` is rejected. Empty authentication objects and empty or non-string fields are rejected before sending.
+
+```typescript
+const result = await provider.tokenExchange({
+  subjectToken,
+  actorToken,
+  actorTokenType: 'urn:cloud:idaas:params:oauth:token-type:agi:actor-token',
+  scope: 'api.example.com|read:file',
+  authentication: {
+    clientAssertion,
+    clientAssertionType: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+  },
+  additionalParameters: { custom_field: 'value' },
+});
+```
+
+Successful exchange results include `scope` and `issuedTokenType`. Each exchange sends a new request and leaves the ordinary credential cache unchanged.
 
 ## HTTP and lifecycle
 
-`httpConfiguration.connectTimeout` and `readTimeout` use milliseconds and accept 2000–60000. TLS verification is enabled by default. The default User-Agent format is `cloud-idaas-typescript/<version> Node.js/<node-version> OS(<platform>; <arch>)`. `httpConfiguration.userAgent` overrides the default SDK/runtime identifier and accepts 1–512 printable ASCII characters. Custom transports can use the public `buildUserAgent()` helper.
+`httpConfiguration.connectTimeout` and `readTimeout` use milliseconds and accept 2000–60000. TLS verification is enabled by default. Connection setup (including TLS) and reading the entire response have independent budgets. The default User-Agent starts with `idaas-typescript-core-sdk/<version> (<platform>; <arch>) Node.js/<node-version>`. Public `getSDKVersion()` returns the same build version, including prerelease labels; source-only builds without version metadata report `unknown`.
+
+The SDK includes the local hostname by default when it can be read safely. Set `userAgentHostname` to use an alias, or set `userAgentHostnameEnabled` to `false` to suppress both the alias and local hostname. Use `userAgentApplicationName`, `userAgentApplicationVersion`, and `userAgentDeploymentEnvironment` to append optional labels. These fields belong to `httpConfiguration` in both JSON and programmatic configuration. Labels are for diagnostics; do not put credentials or personal information in them.
+
+Existing `userAgentMetadata` fields remain supported. Explicit application or alias fields take precedence over the corresponding legacy labels. The legacy `hostname: false` still disables hostname reporting unless `userAgentHostnameEnabled` is explicitly enabled.
+
+Labels are nonblank, contain no ASCII control characters, and are UTF-8 percent-encoded into `app/`, `app-version/`, `deployment/`, and `hostname/` tokens. Each encoded value is limited to 128 characters and the complete Core header to 512 characters. No deployment-name enumeration is imposed.
+
+`httpConfiguration.userAgent` retains its full-replacement behavior (1–512 printable ASCII characters); when supplied, metadata is ignored and no hostname is read. Per-request User-Agent overrides remain case-insensitive. Normal token and Token Exchange calls also supply the header to injected `HttpClient` implementations, which must forward it. Custom callers can use `buildUserAgent(userAgent?, userAgentMetadata?)`.
 
 Keep providers open while requests are in progress. `LENIENT` mode may reuse unexpired credentials after a refresh failure; `STRICT` reports required-refresh failures. Expired credentials are not returned. Close the factory when its work is complete; caller-supplied shared resources remain caller-owned.
 
-Handle SDK errors using their exported error types, `errorCode`, and available `requestId`. Do not log credential objects or rely on error messages as identifiers.
+HTTP errors expose the status, recognized protocol codes, and available request identifiers. Unknown server codes appear as `HTTP_<status>`. Handle errors using the exported error types, `errorCode`, and `requestId`.
 
 ## Examples and support
 
