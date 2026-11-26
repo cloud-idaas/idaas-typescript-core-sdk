@@ -1,10 +1,16 @@
 import {
   IDaaSClientConfig,
+  getSDKVersion,
+  buildUserAgent,
+  UserAgentMetadata,
   IDaaSCredentialProviderFactory,
   StaticClientSecretAssertionProvider,
 } from '@cloud-idaas/core-sdk';
 import { IDaaSPamClient } from '@cloud-idaas/pam-client-sdk';
-import { AlibabaOpenApiCredentialProvider } from '@cloud-idaas/core-alibabacloud-authentication-plugin';
+import {
+  AlibabaOpenApiCredentialProvider,
+  getSDKVersion as getPluginVersion,
+} from '@cloud-idaas/core-alibabacloud-authentication-plugin';
 import { createAlibabaCloudCredentialsProvider } from '@cloud-idaas/akless-alibabacloud-adapter';
 import { createAwsCredentialsProvider } from '@cloud-idaas/akless-aws-adapter';
 import { createTencentCloudCOSCredentialsProvider } from '@cloud-idaas/akless-tencent-adapter';
@@ -14,9 +20,25 @@ const config: IDaaSClientConfig = {
   issuer: 'https://example.test',
   tokenEndpoint: 'https://example.test/token',
   scope: 'resource|read',
+  httpConfiguration: { userAgentMetadata: { applicationId: 'consumer', hostname: false } },
   authnConfiguration: { authnMethod: 'CLIENT_SECRET_POST', clientSecretEnvVarName: 'SECRET' },
 };
 const factory: IDaaSCredentialProviderFactory = new IDaaSCredentialProviderFactory();
+const metadata: UserAgentMetadata = { deploymentEnvironment: 'custom', hostname: 'alias' };
+const version: string = getSDKVersion();
+const userAgent: string = buildUserAgent(undefined, metadata);
+void [version, userAgent];
+const pluginVersion: string = getPluginVersion();
+const customPlugin = new AlibabaOpenApiCredentialProvider({
+  tokenOperation: async (_request, _endpoint, context) => {
+    const header: string = context.userAgent;
+    return { header };
+  },
+});
+void [pluginVersion, customPlugin];
+// @ts-expect-error Hostname collection requires a boolean or an alias string.
+const badMetadata: UserAgentMetadata = { hostname: 1 };
+void badMetadata;
 const assertion = new StaticClientSecretAssertionProvider('secret');
 void [
   config,

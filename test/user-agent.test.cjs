@@ -4,7 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { createServer } = require('node:http');
-const sdk = require('../dist/index.js');
+const sdk = require('../src');
 
 async function capture(client, headers = {}) {
   let received;
@@ -40,10 +40,22 @@ describe('User-Agent on actual HTTP requests', () => {
         stdio: 'pipe',
       });
       const built = require(path.join(fixture, 'dist/index.js'));
+      assert.equal(built.getSDKVersion(), pkg.version);
       const wire = await capture(new built.DefaultHttpClient());
-      assert(wire.value.startsWith('cloud-idaas-typescript/9.8.7-beta.2 '), wire.value);
-      assert(wire.value.includes('Node.js/' + process.versions.node));
-      assert(wire.value.includes('OS(' + process.platform + '; ' + process.arch + ')'));
+      const base = `idaas-typescript-core-sdk/9.8.7-beta.2 (${process.platform}; ${process.arch}) Node.js/${process.versions.node}`;
+      assert(wire.value.startsWith(base), wire.value);
+      for (const content of ['{}', '{"version":"bad version"}', null]) {
+        const packagePath = path.join(fixture, 'package.json');
+        if (content === null) fs.unlinkSync(packagePath);
+        else fs.writeFileSync(packagePath, content);
+        execFileSync(process.execPath, [path.join(fixture, 'scripts/build-version.cjs')], {
+          cwd: fixture,
+          stdio: 'pipe',
+        });
+        assert(
+          fs.readFileSync(path.join(fixture, 'src/sdk-version.ts'), 'utf8').includes("'unknown'"),
+        );
+      }
     } finally {
       fs.rmSync(fixture, { recursive: true, force: true });
     }

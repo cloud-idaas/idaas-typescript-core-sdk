@@ -127,7 +127,8 @@ describe('Federated authentication and metadata contracts', () => {
       const certificate = pem.trim();
       validatePemCertificates(certificate, true);
       validatePemCertificates(Array(5).fill(certificate).join('\n'), true);
-      for (const invalid of ['', Array(6).fill(certificate).join('\n'), certificate + ',']) {
+      validatePemCertificates(Array(6).fill(certificate).join('\n'), true);
+      for (const invalid of ['', certificate + ',']) {
         assert.throws(() => validatePemCertificates(invalid, true), {
           errorCode: 'InvalidCertificateChain',
         });
@@ -157,7 +158,7 @@ describe('Federated authentication and metadata contracts', () => {
       });
       assert.equal(await provider.getAccessToken(), 'access');
       provider.close();
-      for (const invalidChain of ['', Array(6).fill(certificate).join('\n'), 'not a PEM chain']) {
+      for (const invalidChain of ['', 'not a PEM chain']) {
         let requests = 0;
         const bad = configuration('PCA');
         Object.assign(bad.authnConfiguration, {

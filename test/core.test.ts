@@ -1,5 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { createServer } from 'node:http';
+import { createServer as createTcpServer, type Socket } from 'node:net';
+import { gzipSync, deflateSync } from 'node:zlib';
 import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -39,6 +41,7 @@ function transport(handler?: (request: HttpRequest) => void): HttpClient {
   return {
     async send(request) {
       handler?.(request);
+      const form = new URLSearchParams(request.body);
       return {
         statusCode: 200,
         headers: {},
@@ -47,6 +50,12 @@ function transport(handler?: (request: HttpRequest) => void): HttpClient {
           token_type: 'Bearer',
           expires_in: 3600,
           expires_at: Math.floor(Date.now() / 1000) + 3600,
+          ...(form.get('grant_type') === 'urn:ietf:params:oauth:grant-type:token-exchange'
+            ? {
+                scope: form.get('scope'),
+                issued_token_type: 'urn:ietf:params:oauth:token-type:access_token',
+              }
+            : {}),
         }),
       };
     },
@@ -101,7 +110,7 @@ describe('OAuth and configuration contracts', () => {
       subjectToken: 'subject',
       actorToken: 'actor',
       actorTokenType: 'type',
-      audience: 'aud',
+      audience: 'resource',
     });
     const first = new URLSearchParams(requests[0]!.body);
     assert.equal(first.get('client_secret'), secret);
@@ -110,6 +119,142 @@ describe('OAuth and configuration contracts', () => {
     assert.equal(exchange.get('client_id'), 'client');
     assert.equal(exchange.get('actor_token'), 'actor');
     provider.close();
+  });
+  it('validates exchange response type and preserves granted scope', async () => {
+    const tokenType = 'urn:ietf:params:oauth:token-type:access_token';
+    let exchangeBody: Record<string, unknown> = {
+      access_token: 'exchange',
+      token_type: 'Bearer',
+      expires_in: 3600,
+      scope: 'resource|read',
+      issued_token_type: tokenType,
+    };
+    const provider = new IDaaSMachineCredentialProvider(config(), {
+      clientSecretSupplier: () => secret,
+      cache: { logger: quiet },
+      httpClient: {
+        async send(request) {
+          const exchange = new URLSearchParams(request.body)
+            .get('grant_type')
+            ?.includes('token-exchange');
+          return {
+            statusCode: 200,
+            headers: {},
+            body: JSON.stringify(
+              exchange
+                ? exchangeBody
+                : { access_token: 'access', token_type: 'Bearer', expires_in: 3600 },
+            ),
+          };
+        },
+      },
+    });
+    try {
+      await provider.getCredential();
+      const result = await provider.tokenExchange({ subjectToken: 'subject' });
+      assert.equal(result.issuedTokenType, tokenType);
+      assert.equal(result.scope, 'resource|read');
+      for (const bad of [
+        { ...exchangeBody, issued_token_type: undefined },
+        { ...exchangeBody, issued_token_type: 'unsupported' },
+        { ...exchangeBody, scope: undefined },
+        { ...exchangeBody, scope: '' },
+      ]) {
+        exchangeBody = bad;
+        await assert.rejects(provider.tokenExchange({ subjectToken: 'subject' }));
+      }
+    } finally {
+      provider.close();
+    }
+  });
+  it('rejects malformed exchange fields before sending', async () => {
+    let calls = 0;
+    const provider = new IDaaSMachineCredentialProvider(config(), {
+      clientSecretSupplier: () => secret,
+      cache: { logger: quiet },
+      httpClient: transport(() => {
+        calls++;
+      }),
+    });
+    try {
+      await provider.getCredential();
+      for (const options of [
+        { subjectToken: '' },
+        { subjectToken: 'subject', subjectTokenType: '' },
+        { subjectToken: 'subject', requestedTokenType: '' },
+        { subjectToken: 'subject', scope: 'openid' },
+        { subjectToken: 'subject', audience: '' },
+      ])
+        await assert.rejects(provider.tokenExchange(options));
+      assert.equal(calls, 1);
+    } finally {
+      provider.close();
+    }
+  });
+  it('does not send EC or RSA-PSS assertions for PRIVATE_KEY_JWT', async () => {
+    const previousKey = process.env.IDAAS_TEST_PRIVATE_KEY;
+    let calls = 0;
+    try {
+      for (const type of ['ec', 'rsa-pss'] as const) {
+        const pair =
+          type === 'ec'
+            ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' })
+            : generateKeyPairSync('rsa-pss', { modulusLength: 2048 });
+        process.env.IDAAS_TEST_PRIVATE_KEY = pair.privateKey
+          .export({ type: 'pkcs8', format: 'pem' })
+          .toString();
+        const privateConfig = {
+          ...config(),
+          authnConfiguration: {
+            authnMethod: 'PRIVATE_KEY_JWT' as const,
+            privateKeyEnvVarName: 'IDAAS_TEST_PRIVATE_KEY',
+          },
+        };
+        const provider = new IDaaSMachineCredentialProvider(privateConfig, {
+          httpClient: transport(() => {
+            calls++;
+          }),
+          cache: { logger: quiet },
+        });
+        try {
+          await assert.rejects(provider.getCredential());
+        } finally {
+          provider.close();
+        }
+      }
+      assert.equal(calls, 0);
+    } finally {
+      if (previousKey === undefined) delete process.env.IDAAS_TEST_PRIVATE_KEY;
+      else process.env.IDAAS_TEST_PRIVATE_KEY = previousKey;
+    }
+  });
+  it('checks the algorithm declared by an injected PRIVATE_KEY_JWT signer before sending', async () => {
+    let calls = 0;
+    const privateConfig = {
+      ...config(),
+      authnConfiguration: {
+        authnMethod: 'PRIVATE_KEY_JWT' as const,
+        privateKeyEnvVarName: 'IDAAS_TEST_PRIVATE_KEY',
+      },
+    };
+    const header = Buffer.from(JSON.stringify({ alg: 'PS256' })).toString('base64url');
+    const provider = new IDaaSMachineCredentialProvider(privateConfig, {
+      clientAssertionProvider: {
+        async getClientAssertion() {
+          return `${header}.e30.c2ln`;
+        },
+      },
+      httpClient: transport(() => {
+        calls++;
+      }),
+      cache: { logger: quiet },
+    });
+    try {
+      await assert.rejects(provider.getCredential());
+      assert.equal(calls, 0);
+    } finally {
+      provider.close();
+    }
   });
   it('rejects invalid scope, HTTP timeouts, and malformed responses without exposing response bodies', async () => {
     assert.throws(() => validateConfig({ ...config(), scope: 'invalid' }));
@@ -145,6 +290,59 @@ describe('OAuth and configuration contracts', () => {
         return true;
       },
     );
+    assert.throws(
+      () =>
+        checkResponse({
+          ...failure,
+          body: JSON.stringify({ error: 'invalid_client', request_id: 'offline-request-123' }),
+        }),
+      (error: unknown) => {
+        assert(error instanceof ClientException);
+        assert.equal(error.requestId, 'offline-request-123');
+        return true;
+      },
+    );
+    assert.throws(
+      () =>
+        checkResponse({ ...failure, body: JSON.stringify({ request_id: 'invalid request id' }) }),
+      (error: unknown) => {
+        assert(error instanceof ClientException);
+        assert.equal(error.requestId, undefined);
+        return true;
+      },
+    );
+    assert.throws(
+      () =>
+        checkResponse({
+          ...failure,
+          body: JSON.stringify({
+            error: 'invalid_client',
+            error_description: 'Client is unavailable',
+          }),
+        }),
+      (error: unknown) => {
+        assert(error instanceof ClientException);
+        assert(!error.message.includes('Client is unavailable'));
+        return true;
+      },
+    );
+    for (const description of [
+      'Authorization: Bearer abc',
+      'api_key=offline-key',
+      'sensitive-token',
+      'bad\nheader',
+      'x'.repeat(513),
+    ]) {
+      assert.throws(
+        () =>
+          checkResponse({ ...failure, body: JSON.stringify({ error_description: description }) }),
+        (error: unknown) => {
+          assert(error instanceof ClientException);
+          assert(!error.message.includes(description));
+          return true;
+        },
+      );
+    }
   });
   it('coalesces factory initialization, warmup, and scope creation and allows retries after failure', async () => {
     let calls = 0;
@@ -333,7 +531,7 @@ describe('jose and package modules', () => {
   });
 });
 
-describe('Default httpx wrapper', () => {
+describe('Default HTTP transport', () => {
   it('sends real local form requests and reads responses without following redirects', async () => {
     let requests = 0;
     const server = createServer((req, res) => {
@@ -361,6 +559,129 @@ describe('Default httpx wrapper', () => {
       );
       assert.equal((await client.send({ url: base + '/redirect', method: 'GET' })).statusCode, 302);
       assert.equal(requests, 2);
+    } finally {
+      client.close();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+describe('HTTP time budgets', () => {
+  it('handles response headers and bodies independently of the connection budget', async () => {
+    const sockets = new Map<string, Socket>();
+    const server = createServer((request, response) => {
+      const path = request.url || '';
+      sockets.set(path, request.socket);
+      if (path.includes('warm')) {
+        response.end('ready');
+        return;
+      }
+      if (path.includes('body')) {
+        response.write('a');
+      }
+      const timer = setTimeout(() => response.end('b'), 2400);
+      response.once('close', () => clearTimeout(timer));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    try {
+      await Promise.all(
+        [false, true].flatMap((warm) =>
+          ['body', 'header'].flatMap((phase) =>
+            [
+              [2000, 4000],
+              [4000, 2000],
+            ].map(async ([connectTimeout, readTimeout]) => {
+              const identifier = `${warm}-${phase}-${readTimeout}`;
+              const client = new DefaultHttpClient({ connectTimeout, readTimeout });
+              try {
+                if (warm) {
+                  await client.send({ url: endpoint + '/warm-' + identifier, method: 'GET' });
+                }
+                const request = client.send({
+                  url: endpoint + '/slow-' + identifier,
+                  method: 'GET',
+                });
+                if (readTimeout === 4000) {
+                  assert.equal((await request).body, phase === 'body' ? 'ab' : 'b');
+                } else {
+                  await assert.rejects(request, { errorCode: 'HttpRequestFailed' });
+                }
+                if (warm)
+                  assert.equal(
+                    sockets.get('/warm-' + identifier),
+                    sockets.get('/slow-' + identifier),
+                  );
+              } finally {
+                client.close();
+              }
+            }),
+          ),
+        ),
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('includes the TLS handshake in the connection deadline', async () => {
+    const sockets = new Set<Socket>();
+    const server = createTcpServer((socket) => {
+      sockets.add(socket);
+      socket.once('close', () => sockets.delete(socket));
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    const client = new DefaultHttpClient({ connectTimeout: 2000, readTimeout: 10000 });
+    try {
+      const started = Date.now();
+      await assert.rejects(
+        client.send({ url: `https://127.0.0.1:${address.port}`, method: 'GET' }),
+        { errorCode: 'HttpRequestFailed' },
+      );
+      assert(Date.now() - started < 7000);
+    } finally {
+      client.close();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it('reads compressed responses and preserves the wire size limit', async () => {
+    const largest = 2 * 1024 * 1024 + 1;
+    const server = createServer((request, response) => {
+      if (request.url === '/large-wire') {
+        response.end(Buffer.alloc(largest));
+      } else if (request.url === '/gzip') {
+        response.setHeader('content-encoding', 'gzip');
+        response.end(gzipSync('body'));
+      } else {
+        response.setHeader('content-encoding', 'deflate');
+        response.end(
+          deflateSync(request.url === '/large-decoded' ? Buffer.alloc(largest) : 'body'),
+        );
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    const endpoint = `http://127.0.0.1:${address.port}`;
+    const client = new DefaultHttpClient();
+    try {
+      for (const path of ['/gzip', '/deflate']) {
+        assert.equal((await client.send({ url: endpoint + path, method: 'GET' })).body, 'body');
+      }
+      assert.equal(
+        (await client.send({ url: endpoint + '/large-decoded', method: 'GET' })).body.length,
+        largest,
+      );
+      await assert.rejects(client.send({ url: endpoint + '/large-wire', method: 'GET' }), {
+        errorCode: 'HttpRequestFailed',
+      });
     } finally {
       client.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

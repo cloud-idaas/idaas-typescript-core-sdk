@@ -5,14 +5,19 @@ const prettier = require('prettier');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
-  const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
-  if (typeof pkg.version !== 'string' || !/^[0-9A-Za-z.+-]+$/.test(pkg.version))
-    throw new Error('Invalid SDK package version');
+  let version = 'unknown';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+    if (typeof pkg.version === 'string' && /^[0-9A-Za-z.+-]+$/.test(pkg.version))
+      version = pkg.version;
+  } catch {
+    // Source-only builds may have no package metadata; never invent a release version.
+  }
   const config = JSON.parse(fs.readFileSync(path.join(root, '.prettierrc.json'), 'utf8'));
   const source = await prettier.format(
     '// Generated from package.json by scripts/build-version.cjs. Do not edit.\n' +
       'export const SDK_VERSION: string = ' +
-      JSON.stringify(pkg.version) +
+      JSON.stringify(version) +
       ';\n',
     { ...config, parser: 'typescript' },
   );

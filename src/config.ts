@@ -1,9 +1,10 @@
-import { buildUserAgent } from './user-agent';
+import { buildConfiguredUserAgent } from './user-agent';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { ConfigException, CredentialException } from './errors';
 import { ClientDeployEnvironment, type IDaaSClientConfig, TokenAuthnMethod } from './types';
+import type { CredentialProviderOptions } from './credential-provider';
 
 const REQUIRED_ERROR_CODES: Readonly<Record<string, string>> = {
   idaasInstanceId: 'IDaaSInstanceIdNotFound',
@@ -85,7 +86,11 @@ export function environment(name: string | undefined): string {
   required(value, `environment variable ${name}`);
   return value;
 }
-export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
+/** Validates configuration against the selected sources without reading credentials. */
+export function validateConfig(
+  input: IDaaSClientConfig,
+  sources: CredentialProviderOptions = {},
+): IDaaSClientConfig {
   record(input, 'configuration');
   let config: IDaaSClientConfig;
   try {
@@ -101,7 +106,8 @@ export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
   if (!config.tokenEndpoint.includes('://'))
     throw new ConfigException('tokenEndpoint must include a URL scheme', 'InvalidEndpoint');
   config.scope = normalizeScope(config.scope);
-  if (config.developerApiEndpoint) endpointUrl(config.developerApiEndpoint);
+  if (config.developerApiEndpoint !== undefined) endpointUrl(config.developerApiEndpoint);
+  if (config.openApiEndpoint !== undefined) endpointUrl(config.openApiEndpoint);
   const auth = config.authnConfiguration;
   record(auth, 'authnConfiguration');
   if (!Object.values(TokenAuthnMethod).includes(auth.authnMethod))
@@ -111,22 +117,50 @@ export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
       'This version supports only CLIENT identities',
       'UnsupportedIdentity',
     );
-  if (auth.authnMethod.startsWith('CLIENT_SECRET_'))
+  for (const [source, method] of [
+    [sources.clientAssertionProvider, 'getClientAssertion'],
+    [sources.oidcTokenProvider, 'getOidcToken'],
+    [sources.attestedDocumentProvider, 'getAttestedDocument'],
+  ] as const) {
+    if (
+      source !== undefined &&
+      (!source || typeof source[method as keyof typeof source] !== 'function')
+    )
+      throw new ConfigException('Invalid authentication source', 'InvalidConfiguration');
+  }
+  if (
+    sources.clientSecretSupplier !== undefined &&
+    typeof sources.clientSecretSupplier !== 'function'
+  )
+    throw new ConfigException('Invalid client secret source', 'InvalidConfiguration');
+  if (
+    auth.authnMethod.startsWith('CLIENT_SECRET_') &&
+    !sources.clientSecretSupplier &&
+    !(auth.authnMethod === 'CLIENT_SECRET_JWT' && sources.clientAssertionProvider)
+  )
     required(auth.clientSecretEnvVarName, 'clientSecretEnvVarName');
-  if (['PRIVATE_KEY_JWT', 'PCA'].includes(auth.authnMethod))
+  if (['PRIVATE_KEY_JWT', 'PCA'].includes(auth.authnMethod) && !sources.clientAssertionProvider)
     required(auth.privateKeyEnvVarName, 'privateKeyEnvVarName');
   if (['PCA', 'OIDC', 'PKCS7'].includes(auth.authnMethod))
     required(auth.applicationFederatedCredentialName, 'applicationFederatedCredentialName');
-  if (['OIDC', 'PKCS7'].includes(auth.authnMethod))
+  const fileOidc = auth.authnMethod === 'OIDC' && !sources.oidcTokenProvider;
+  if (fileOidc) {
+    if (auth.oidcTokenFilePath !== undefined) required(auth.oidcTokenFilePath, 'oidcTokenFilePath');
+    else if (auth.oidcTokenFilePathEnvVarName !== undefined)
+      required(auth.oidcTokenFilePathEnvVarName, 'oidcTokenFilePathEnvVarName');
+  }
+  const needsEnvironment =
+    (fileOidc &&
+      auth.oidcTokenFilePath === undefined &&
+      auth.oidcTokenFilePathEnvVarName === undefined) ||
+    (auth.authnMethod === 'PKCS7' && !sources.attestedDocumentProvider);
+  if (needsEnvironment) {
     required(auth.clientDeployEnvironment, 'clientDeployEnvironment');
-  if (
-    auth.clientDeployEnvironment !== undefined &&
-    !Object.values(ClientDeployEnvironment).includes(auth.clientDeployEnvironment)
-  ) {
-    throw new ConfigException(
-      'Unsupported clientDeployEnvironment',
-      'UnsupportedClientDeployEnvironment',
-    );
+    if (!Object.values(ClientDeployEnvironment).includes(auth.clientDeployEnvironment))
+      throw new ConfigException(
+        'Unsupported clientDeployEnvironment',
+        'UnsupportedClientDeployEnvironment',
+      );
   }
   if (auth.authnMethod === 'PCA') {
     required(auth.clientX509Certificate, 'clientX509Certificate');
@@ -134,8 +168,6 @@ export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
   }
   if (auth.authnMethod === 'PLUGIN') {
     required(auth.pluginName, 'pluginName');
-    required(config.openApiEndpoint, 'openApiEndpoint');
-    endpointUrl(config.openApiEndpoint);
   }
   if (config.httpConfiguration !== undefined) record(config.httpConfiguration, 'configuration');
   const http = (config.httpConfiguration = {
@@ -152,7 +184,7 @@ export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
         field === 'connectTimeout' ? 'ConnectTimeoutNotValid' : 'ReadTimeoutNotValid',
       );
   }
-  buildUserAgent(http.userAgent);
+  buildConfiguredUserAgent(http);
   if (typeof http.unsafeIgnoreSslCert !== 'boolean')
     throw new ConfigException('unsafeIgnoreSslCert must be a boolean', 'InvalidConfiguration');
   config.failureMode = config.failureMode === undefined ? 'LENIENT' : config.failureMode;
@@ -160,7 +192,11 @@ export function validateConfig(input: IDaaSClientConfig): IDaaSClientConfig {
     throw new ConfigException('Unsupported failureMode', 'InvalidConfiguration');
   return config;
 }
-export async function loadConfig(path?: string): Promise<IDaaSClientConfig> {
+/** Loads JSON configuration and validates only the dependencies of the selected sources. */
+export async function loadConfig(
+  path?: string,
+  sources: CredentialProviderOptions = {},
+): Promise<IDaaSClientConfig> {
   const location =
     path ||
     process.env.CLOUD_IDAAS_CONFIG_PATH ||
@@ -174,5 +210,5 @@ export async function loadConfig(path?: string): Promise<IDaaSClientConfig> {
       'LoadConfigFileFailed',
     );
   }
-  return validateConfig(data);
+  return validateConfig(data, sources);
 }

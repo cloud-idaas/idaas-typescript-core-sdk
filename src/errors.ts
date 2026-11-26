@@ -1,4 +1,4 @@
-/** Omits raw requests, responses, and causes to prevent third-party errors from leaking credentials. */
+/** SDK exceptions omit raw requests, responses, and causes. */
 export class IDaaSException extends Error {
   constructor(
     message: string,
